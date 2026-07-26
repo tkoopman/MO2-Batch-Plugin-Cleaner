@@ -171,6 +171,7 @@ class Plugins:
         plugins: list["plugin"],
         index: dict[str, int] | None,
         first_dynamic: int,
+        first_dynamic_name: str | None,
         cleanPrimary: bool,
         cleanCC: bool,
         cleanElse: bool,
@@ -184,6 +185,7 @@ class Plugins:
             self.reindex()
 
         self.first_dynamic = first_dynamic
+        self.first_dynamic_name = first_dynamic_name
         self.__cleanPrimary = cleanPrimary
         self.__cleanCC = cleanCC
         self.__cleanElse = cleanElse
@@ -350,6 +352,7 @@ class Plugins:
             plugins_data,
             plugins_index,
             firstDynamicFound,
+            firstDynamic if firstDynamicFound != -1 else None,
             cleanPrimary,
             cleanCC,
             cleanElse,
@@ -413,6 +416,7 @@ class Plugins:
             selected_plugins,
             None,
             plugins.first_dynamic,
+            plugins.first_dynamic_name,
             plugins.__cleanPrimary,
             plugins.__cleanCC,
             plugins.__cleanElse,
@@ -533,8 +537,15 @@ class plugin_select_model(QAbstractTableModel):
                     )
 
             case 1:
+                is_dynamic = (
+                    self.__plugins.first_dynamic != -1
+                    and plugin["priority"] >= self.__plugins.first_dynamic
+                )
                 if role == Qt.ItemDataRole.DecorationRole:
                     if plugin["ignore"]:
+                        return icons.DO_NOT_CLEAN
+
+                    if is_dynamic:
                         return icons.DO_NOT_CLEAN
 
                     match plugin["state"]:
@@ -547,6 +558,8 @@ class plugin_select_model(QAbstractTableModel):
                         case plugin_clean_state.REQUIRES_MANUAL:
                             return icons.CLEAN_STATE_MANUAL
                 if role == Qt.ItemDataRole.ToolTipRole:
+                    if is_dynamic:
+                        return f"Do not clean. Dynamic patches start at {self.__plugins.first_dynamic_name}"
                     match plugin["state"]:
                         case plugin_clean_state.UNKNOWN:
                             return "Unknown cleaning state"
@@ -632,70 +645,156 @@ class PluginSelectWindow(QDialog):
 
     def show_context_menu(self, position: QPoint):
         context_menu = QMenu(self)
+        context_menu.setToolTipsVisible(True)
 
         index = self.__main_screen.pluginsView.indexAt(position)
         if not index.isValid():
             return
 
-        if index.column() != 0:
-            index = index.sibling(index.row(), 0)
-
-        plugin = self.__main_screen.pluginsView.model().data(index, Qt.ItemDataRole.DisplayRole)  # type: ignore
-
-        if not plugin or not isinstance(plugin, str):
+        selected_rows = self.__main_screen.pluginsView.selectionModel().selectedRows(0)
+        if not selected_rows:
             return
 
-        plugin = self.__plugins[plugin]
-        if not plugin:
-            return
+        # Gather the check states of selected plugins
+        selected_plugins = [
+            self.__plugins[row.data()]
+            for row in selected_rows
+            if self.__plugins[row.data()]
+        ]
+        all_ignored  = len(selected_plugins) > 0 and all(p["ignore"] for p in selected_plugins)
+        selected_states = [p["selected"] for p in selected_plugins if not p["ignore"]]
+        all_enabled  = bool(selected_states) and all(selected_states)
+        all_disabled = bool(selected_states) and not any(selected_states)
 
-        action = QAction("Allow cleaning" if plugin["ignore"] else "Do not clean", self)
-        action.setToolTip("Will not allow cleaning of this plugin")
-        action.triggered.connect(self.context_menu_toggle_ignore)  # type: ignore
+        action = QAction("Enable selected", self)
+        action.setToolTip("Check all selected plugins")
+        action.setEnabled(not all_ignored and not all_enabled)
+        action.triggered.connect(self.context_menu_enable_selected)  # type: ignore
         context_menu.addAction(action)  # type: ignore
 
-        action = QAction("Set first dynamic patch", self)
-        action.setToolTip("Will never auto select this mod or any with higher priority")
-        action.triggered.connect(self.context_menu_set_dynamic)  # type: ignore
+        action = QAction("Disable selected", self)
+        action.setToolTip("Uncheck all selected plugins")
+        action.setEnabled(not all_ignored and not all_disabled)
+        action.triggered.connect(self.context_menu_disable_selected)  # type: ignore
+        context_menu.addAction(action)  # type: ignore
+        if not all_ignored and not all_enabled and not all_disabled:
+            action = QAction("Invert selected", self)
+            action.setToolTip("Toggle the check state of all selected plugins")
+            action.triggered.connect(self.context_menu_invert_selected)  # type: ignore
+            context_menu.addAction(action)  # type: ignore
+
+        context_menu.addSeparator()
+
+        # Determine ignore label based on the right-clicked plugin
+        clicked_index = index if index.column() == 0 else index.sibling(index.row(), 0)
+        clicked_plugin_name = self.__main_screen.pluginsView.model().data(clicked_index, Qt.ItemDataRole.DisplayRole)  # type: ignore
+        clicked_plugin = self.__plugins[clicked_plugin_name] if isinstance(clicked_plugin_name, str) else None
+        if not clicked_plugin:
+            return
+
+        new_ignore = not clicked_plugin["ignore"]
+        action = QAction("Do not clean" if new_ignore else "Allow cleaning", self)
+        action.setToolTip("Toggle cleaning for all selected plugins")
+        action.triggered.connect(lambda: self.context_menu_toggle_ignore(new_ignore))  # type: ignore
+        context_menu.addAction(action)  # type: ignore
+
+        is_current_dynamic = (
+            self.__plugins.first_dynamic != -1
+            and clicked_plugin["priority"] == self.__plugins.first_dynamic
+        )
+
+        if is_current_dynamic:
+            action = QAction("Clear first dynamic patch", self)
+            action.setToolTip("Remove the first dynamic patch setting and restore affected plugins to default state")
+            action.setEnabled(len(selected_rows) == 1)
+            action.triggered.connect(self.context_menu_clear_dynamic)  # type: ignore
+        else:
+            action = QAction("Set first dynamic patch", self)
+            action.setToolTip("Will never auto select this mod or any with higher priority")
+            action.setEnabled(len(selected_rows) == 1)
+            action.triggered.connect(self.context_menu_set_dynamic)  # type: ignore
+        context_menu.addAction(action)  # type: ignore
+
+        context_menu.addSeparator()
+
+        action = QAction("Reset All", self)
+        action.setToolTip("Reset all plugins to their default state")
+        action.triggered.connect(self.context_menu_reset_all)  # type: ignore
         context_menu.addAction(action)  # type: ignore
 
         context_menu.exec(self.__main_screen.pluginsView.mapToGlobal(position))  # type: ignore
 
-    def context_menu_toggle_ignore(self):
-        index = self.__main_screen.pluginsView.currentIndex()
-        if not index.isValid():
-            return
-
+    def context_menu_toggle_ignore(self, new_ignore: bool):
         model = self.__main_screen.pluginsView.model()
         if not model:
             return
 
-        if index.column() != 0:
-            index = index.sibling(index.row(), 0)
+        selected_rows = self.__main_screen.pluginsView.selectionModel().selectedRows(0)
+        if not selected_rows:
+            return
 
-        plugin = self.__plugins[index.data()]
-        if plugin:
-            plugin["ignore"] = not plugin["ignore"]
-            self.__plugins.organizer.setPluginSetting(
-                CleanerPlugin.NAME(),
-                "do_not_clean",
-                ",".join(self.__plugins.get_ignored()),
+        for index in selected_rows:
+            plugin = self.__plugins[index.data()]
+            if plugin:
+                plugin["ignore"] = new_ignore
+
+                if plugin["ignore"]:
+                    plugin["selected"] = False
+                else:
+                    plugin["selected"] = self.__plugins.selected_default(plugin)
+
+                model.dataChanged.emit(
+                    index,
+                    index.siblingAtColumn(model.columnCount() - 1),
+                    [
+                        Qt.ItemDataRole.DisplayRole,
+                        Qt.ItemDataRole.CheckStateRole,
+                        Qt.ItemDataRole.DecorationRole,
+                    ],
+                )
+
+        self.__plugins.organizer.setPluginSetting(
+            CleanerPlugin.NAME(),
+            "do_not_clean",
+            ",".join(self.__plugins.get_ignored()),
+        )
+
+    def __reset_plugin_state_range(self, start: int, end: int):
+        """Reset selected state for all plugins with priority in [start, end]."""
+        model = self.__main_screen.pluginsView.model()
+        if not model:
+            return
+
+        for x in range(model.rowCount()):
+            col0_index = model.index(x, 0)
+            p = to_int(model.data(model.index(x, 2), Qt.ItemDataRole.DisplayRole), -1)
+            if start <= p <= end:
+                plugin_name = model.data(col0_index, Qt.ItemDataRole.DisplayRole)  # type: ignore
+                p_obj = self.__plugins[plugin_name] if isinstance(plugin_name, str) else None
+                if p_obj is None:
+                    continue
+                p_obj["selected"] = self.__plugins.selected_default(p_obj)
+                model.dataChanged.emit(col0_index, col0_index, [Qt.ItemDataRole.CheckStateRole])  # type: ignore
+
+        row_count = self.__plugins_model.rowCount()
+        if row_count > 0:
+            self.__plugins_model.dataChanged.emit(
+                self.__plugins_model.index(0, 1),
+                self.__plugins_model.index(row_count - 1, 1),
+                [Qt.ItemDataRole.DecorationRole, Qt.ItemDataRole.ToolTipRole],
             )
 
-            if plugin["ignore"]:
-                plugin["selected"] = False
-            else:
-                plugin["selected"] = self.__plugins.selected_default(plugin)
+    def context_menu_clear_dynamic(self):
+        if self.__plugins.first_dynamic == -1:
+            return
 
-            model.dataChanged.emit(
-                index,
-                index.siblingAtColumn(model.columnCount() - 1),
-                [
-                    Qt.ItemDataRole.DisplayRole,
-                    Qt.ItemDataRole.CheckStateRole,
-                    Qt.ItemDataRole.DecorationRole,
-                ],
-            )
+        self.__plugins.organizer.setPluginSetting(
+            CleanerPlugin.NAME(), "first_dynamic", ""
+        )
+        old_first_dynamic = self.__plugins.first_dynamic
+        self.__plugins.first_dynamic = -1
+        self.__plugins.first_dynamic_name = None
+        self.__reset_plugin_state_range(old_first_dynamic, sys.maxsize)
 
     def context_menu_set_dynamic(self):
         index = self.__main_screen.pluginsView.currentIndex()
@@ -717,14 +816,36 @@ class PluginSelectWindow(QDialog):
         self.__plugins.organizer.setPluginSetting(
             CleanerPlugin.NAME(), "first_dynamic", plugin
         )
-        for x in range(model.rowCount()):
-            p = to_int(model.data(model.index(x, 2), Qt.ItemDataRole.DisplayRole), -1)
-            if p >= priority:
-                model.setData(
-                    model.index(x, 0),
-                    Qt.CheckState.Unchecked,
-                    Qt.ItemDataRole.CheckStateRole,
-                )
+        old_first_dynamic = self.__plugins.first_dynamic
+        self.__plugins.first_dynamic = priority
+        self.__plugins.first_dynamic_name = plugin
+        lower_bound = min(priority, old_first_dynamic) if old_first_dynamic >= 0 else priority
+        self.__reset_plugin_state_range(lower_bound, sys.maxsize)
+
+    def context_menu_reset_all(self):
+        self.__reset_plugin_state_range(0, sys.maxsize)
+
+    def __set_selected_check_state(self, state: bool | None):
+        """Set or toggle selected for all selected rows. Pass None to invert."""
+        model = self.__main_screen.pluginsView.model()
+        if not model:
+            return
+
+        selected_rows = self.__main_screen.pluginsView.selectionModel().selectedRows(0)
+        for index in selected_rows:
+            plugin = self.__plugins[index.data()]
+            if plugin and not plugin["ignore"]:
+                plugin["selected"] = not plugin["selected"] if state is None else state
+                model.dataChanged.emit(index, index, [Qt.ItemDataRole.CheckStateRole])
+
+    def context_menu_enable_selected(self):
+        self.__set_selected_check_state(True)
+
+    def context_menu_disable_selected(self):
+        self.__set_selected_check_state(False)
+
+    def context_menu_invert_selected(self):
+        self.__set_selected_check_state(None)
 
     def sort_indicator_changed(self, column: int, order: Qt.SortOrder):
         if column == 1:
