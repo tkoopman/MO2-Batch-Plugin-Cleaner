@@ -24,6 +24,23 @@
         "Added Reset All option instead of having to close and reopen the plugin to reset to default selected states.",
         "Made it clear when plugins are affected by 'First dynamic plugin' and ability to clear."
       ]
+    },
+    {
+      "Version": "1.3.1",
+      "Released": "2026-08-01",
+      "MinSupport": "2.4.2",
+      "MaxSupport": "2.5.2",
+      "MinWorking": "2.4.0",
+      "MaxWorking": "",
+      "DownloadUrl": "https://github.com/tkoopman/MO2-Batch-Plugin-Cleaner/archive/refs/tags/v1.3.1.zip",
+      "PluginPath": [
+        "MO2-Batch-Plugin-Cleaner-1.3.1/mo2_batch_plugin_cleaner/"
+      ],
+      "LocalePath": [],
+      "DataPath": [ "data/cleaning_data.csv", "data/Batch Plugin Cleaner/" ],
+      "ReleaseNotes": [
+        "Hopefully fix bug some where having with reading the log files."
+      ]
     }
   ]
 }

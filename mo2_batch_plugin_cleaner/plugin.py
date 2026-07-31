@@ -1255,7 +1255,7 @@ class CleanerPlugin(mobase.IPluginTool):
             mobase.PluginSetting(
                 "auto_close",
                 "Auto close plugin selection window after clean.",
-                True,
+                False,
             ),
             mobase.PluginSetting(
                 "exe_name_xedit",

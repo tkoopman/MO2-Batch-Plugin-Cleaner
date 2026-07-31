@@ -291,7 +291,7 @@ plugins:
             logFile = Path(logFile)
 
         if logFile.is_file():
-            with open(logFile, "r") as file:
+            with open(logFile, mode="r", encoding="utf-8", errors="ignore") as file:
                 text = file.read()
                 file.close()
                 lme = re.search(
